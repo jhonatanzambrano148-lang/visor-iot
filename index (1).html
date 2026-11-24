@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor IoT - ESP32</title>
+<style>
+ :root{--azul:#0b5e7e;--verde:#067647;--rojo:#b42318;--gris:#5b6b7a}
+ *{box-sizing:border-box}
+ body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f1f4f7;color:#1d2733}
+ header{background:var(--azul);color:#fff;padding:16px}
+ header h1{margin:0;font-size:20px} header p{margin:4px 0 0;font-size:12px;opacity:.85}
+ main{max-width:520px;margin:auto;padding:14px}
+ .caja{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+ .caja h2{margin:0 0 10px;font-size:15px;color:var(--gris);font-weight:600}
+ .grande{font-size:40px;font-weight:700} .peq{font-size:12px;color:var(--gris)}
+ .barra{height:12px;background:#e3e8ee;border-radius:6px;overflow:hidden;margin-top:8px}
+ .barra div{height:100%;width:0;background:linear-gradient(90deg,#f5b800,#ffde59);transition:width .4s}
+ .foco{display:flex;align-items:center;gap:14px}
+ .bombillo{width:56px;height:56px;border-radius:50%;background:#cfd6dd;transition:.3s}
+ .bombillo.on{background:#ffd43b;box-shadow:0 0 24px 6px rgba(255,212,59,.7)}
+ .botones{display:flex;gap:10px;margin-top:14px}
+ button{flex:1;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:600;color:#fff;cursor:pointer}
+ .on-btn{background:var(--verde)} .off-btn{background:var(--rojo)}
+ canvas{width:100%;height:120px}
+ #estado{font-size:12px;margin-top:6px} .err{color:var(--rojo)} .ok{color:var(--verde)}
+</style>
+</head>
+<body>
+<header>
+ <h1>Visor IoT - ESP32</h1>
+ <p>Plataforma Cygnus UNIAJC · dispositivo <span id="disp"></span></p>
+</header>
+<main>
+ <div class="caja">
+  <h2>Sensor de luz (LDR) - lectura</h2>
+  <div class="grande" id="ldr">--</div>
+  <div class="barra"><div id="nivel"></div></div>
+  <div class="peq">Valor del ADC (0 a 4095). Más alto = más luz.</div>
+  <canvas id="grafica" width="480" height="120"></canvas>
+ </div>
+
+ <div class="caja">
+  <h2>Bombillo (LED) - escritura</h2>
+  <div class="foco"><div class="bombillo" id="foco"></div>
+   <div><div class="grande" id="txtFoco" style="font-size:24px">--</div>
+   <div class="peq">Estado reportado por el ESP32</div></div></div>
+  <div class="botones">
+   <button class="on-btn" onclick="escribir('E')">Encender</button>
+   <button class="off-btn" onclick="escribir('A')">Apagar</button>
+  </div>
+ </div>
+ <div class="peq" id="hora">Última lectura: --</div>
+ <div id="estado"></div>
+</main>
+
+<script>
+// ===== CONFIGURACION =====
+const ID = 214;            // id del dispositivo en Cygnus
+const CLAVE = "joz12";  // clave del dispositivo
+const BASE = "https://cygnus.uniajc.edu.co/appis/";
+const INTERVALO_MS = 2000; // cada cuanto se lee
+// =========================
+
+document.getElementById('disp').textContent = ID;
+const hist = [];
+
+function msg(t, cls){ const e=document.getElementById('estado'); e.className=cls||''; e.textContent=t; }
+
+// LEER: Cygnus responde "E:2800" o "A:601" (estado del LED : valor del LDR)
+async function leer(){
+  try{
+    const r = await fetch(`${BASE}ldispositivo.php?id=${ID}&c=${encodeURIComponent(CLAVE)}&t=${Date.now()}`);
+    const texto = (await r.text()).replace(/<[^>]*>/g,'').trim().toUpperCase();
+    const estado = texto.startsWith('E') ? 'E' : (texto.startsWith('A') ? 'A' : null);
+    const m = texto.match(/-?\d+(\.\d+)?/);
+    if(m){ mostrarLDR(parseFloat(m[0])); }
+    if(estado) mostrarFoco(estado);
+    document.getElementById('hora').textContent = 'Última lectura: ' + new Date().toLocaleTimeString() + '  (respuesta: ' + texto + ')';
+    if(document.getElementById('estado').className==='err') msg('');
+  }catch(e){
+    msg('No se pudo leer Cygnus: ' + e.message, 'err');
+  }
+}
+
+// ESCRIBIR: envia "E" (encender) o "A" (apagar). El ESP32 la lee y aplica.
+async function escribir(orden){
+  try{
+    await fetch(`${BASE}edispositivo.php?id=${ID}&c=${encodeURIComponent(CLAVE)}&v=${orden}`, {mode:'no-cors'});
+    mostrarFoco(orden);
+    msg(orden==='E' ? 'Orden enviada: encender' : 'Orden enviada: apagar', 'ok');
+  }catch(e){
+    msg('No se pudo escribir en Cygnus: ' + e.message, 'err');
+  }
+}
+
+function mostrarLDR(v){
+  document.getElementById('ldr').textContent = v;
+  document.getElementById('nivel').style.width = Math.min(100, v/4095*100) + '%';
+  hist.push(v); if(hist.length>40) hist.shift();
+  dibujar();
+}
+function mostrarFoco(e){
+  document.getElementById('foco').classList.toggle('on', e==='E');
+  document.getElementById('txtFoco').textContent = e==='E' ? 'Encendido' : 'Apagado';
+}
+function dibujar(){
+  const c=document.getElementById('grafica'), g=c.getContext('2d'), W=c.width, H=c.height;
+  g.clearRect(0,0,W,H);
+  if(hist.length<2) return;
+  const min=Math.min(...hist), max=Math.max(...hist), rango=(max-min)||1;
+  g.strokeStyle='#0b5e7e'; g.lineWidth=2; g.beginPath();
+  hist.forEach((v,i)=>{ const x=i*(W-10)/(hist.length-1)+5, y=H-10-(v-min)/rango*(H-30);
+    i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.stroke();
+  g.fillStyle='#5b6b7a'; g.font='11px sans-serif';
+  g.fillText('máx '+max,5,12); g.fillText('mín '+min,5,H-1);
+}
+
+leer(); setInterval(leer, INTERVALO_MS);
+</script>
+</body>
+</html>
